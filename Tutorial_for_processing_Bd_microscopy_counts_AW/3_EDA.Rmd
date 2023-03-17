@@ -1,0 +1,126 @@
+---
+title: "Exploratory Data Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+
+```
+
+# Loading data
+
+Below, I load data that has already been cleaned, processed, and quality filtered. 
+
+
+```{r}
+library(tidyverse)
+#### Pathways ####
+datPW <- "2_combine_data/downstream/full_metadata.txt"
+#### Load ####
+dat <- read.delim(datPW)
+```
+
+# Exploratory data analysis
+
+"EDA", or exploratory data analysis, is when you muck around with your data to see how it looks; whether there are any promising trends; whether there are any errors you need to clean up; etc. Not all of your EDA will "make it" into your final paper, so this is the space to explore ALL the questions you have, even if you don't end up using it later.
+
+
+## Looking at variables
+
+The first thing you should do is to look at your data.
+
+```{r}
+str(dat)
+```
+
+We have the following column names that are important to us:\
+* Rep == Replicate\
+* RichLevel == The number of bacterial isolates introduced to the jar\
+* Inhibitory == Whether isolates in the treatment inhibited Bd in plate assays\
+* Bd_density == Your microscopy counts!\
+* Bd_sd == standard deviation of counts between pictures from same Rep/Jar\
+* BacterialCopyNumber_mean == the average qPCR copy number for bacteria BEFORE the membrane was exposed to Bd.\
+* BdCopyNumber_mean == the average qPCR copy number for Bd on the membrane AFTER Bd exposure\
+* CV == Crystal Violet intensity, which is a proxy for biofilm thickness\
+
+(Anything with sd at the end means standard deviation)
+
+The experimental design was this: \
+* Bacterial isolates were introduced to each jar and allowed to form biofilms on the membranes for 4 days\
+* Membranes were peeled off steel hardware. One membrane was stained with CV for biofilm thcikness; the other was incubated with 1 million zoospores\
+* After 4 days, membranes are swabbed and/or stained with calcofluor white to visualize zoosporangia under a fluroescent microscope.\
+
+## Ground-truthing your data
+
+The next thing you should always do is just plot all your variables and make sure everything looks normal. Sometimes "mistakes" are only obvious once you've plotted it out-- so better to look at it now, then realize several hours in that you need to fix something.
+
+
+```{r BdDens_by_SampleID}
+ggplot(dat, aes(x=SampleID, y=Bd_density)) +
+  geom_point()+
+  theme(axis.text.x = element_text(angle=90)) # within the "theme" of the plot, rotate x-axis text 90 degrees
+```
+
+Cool! This plot is not very informative, but it does confirm that all the counts "look" normal. The only thing we "notice" is that counts seem non-normally distributed, which means it's really had to see differences in small counts because large counts are SO large. This suggests we need to "log" this data. Now, let's do some "sanity checks".
+
+### Question 1: Do Bd zoosporangia counts and qPCR results agree with each other?
+
+This is where we check whether your counts line up with qPCR results!
+
+```{r qPCR_vs_counts }
+dat %>% mutate(logBd_density = log(Bd_density+1), logBd_qPCR = log(BdCopyNumber_mean +1))  %>% # Notice here I do log +1-- log of 0 is NA, so we artificially add 1 so that "0" is actually "0"
+ggplot( aes(x=logBd_density, y=logBd_qPCR))+ # Also notice here that I 'pipe' in the data with %>% so we can do the log adjustments above
+  geom_point()
+
+```
+
+It looks like it's not a perfect fit-- but there is a strong correlation so that's good! Part of the problem is that there are very few "zero" qPCR samples. Why do you think this might be? What subset of the data could you show to support your hypothesis?
+
+### Question 2: Do thicker biofilms (crystal violet) also have more bacterial cells (qPCR copy number)?
+
+I measure "biofilm thickness" in two ways-- either physical thickness (measured via crystal violet staining) and bacterial qPCRs. Crystal violet binds to negative charged materials, so it will adhere to cell surfaces, extracellular DNA, and proteins. In a biofilm, some bacteria will build an "extra-cellular matrix" to house themselves in, so CV staining will detect these extra-cellular matrix components. In contrast, qPCR will only tell you how many copy numbers are present. Thus, we could have a very thick biofilm with relatively few copy numbers (in theory). Here, we check the relationship between these two variabls.
+
+```{r CV_vs_qPCR}
+dat %>% mutate(logCV = log(CV+0.001), logBact_qPCR = log(BacterialCopyNumber_mean +1))  %>% # Here, I add 0.0001 to CV log since CV values are small; has around 3 sigfigs of resolution.
+ggplot(aes(x=logCV, y=logBact_qPCR)) + geom_point()
+```
+
+
+## Question 3: How does biofilm thickness vary with bacterial richness?
+
+Now we start asking the interesting questions-- do more bacterial isolates (greater bacterial richness) result in thicker biofilms?
+
+``` {r rich_vs_CV}
+dat %>%
+  ggplot() + geom_boxplot(aes(x=factor(RichLevel), y=log(CV+0.001))) # Notice I use "factor(RichLevel)"-- thats because boxplots require CATEGORICAL x-values, but RichLevel is numeric (continuous). Thus, I can "force" RichLevel to be a factor (ie categorical) by using the "factor" command. This means they will space all factors equally apart along the x-axis (ie 0 vs 1 and equally close as 3 vs 10). This is fine for our uses, but important to keep in mind when designing figures. 
+```
+
+The more isolates you introduce into the jar, the thicker the biofilms are! Let's look at qPCR results now:
+
+``` {r rich_vs_bactqPCR}
+dat %>%
+  ggplot() + geom_boxplot(aes(x=factor(RichLevel), y=log(BacterialCopyNumber_mean+1))) # Notice I use "factor(RichLevel)"-- thats because boxplots require CATEGORICAL x-values, but RichLevel is numeric (continuous). Thus, I can "force" RichLevel to be a factor (ie categorical) by using the "factor" command.
+```
+
+A similar relationship! We can use a linear regression to see whether there is a relationship between RichLevel and Bacterial Copy number or CV biofilm thickness:
+
+``` {r stats_richlevel_vs_biofilm}
+
+model1 <- lm(log(CV+0.001) ~ RichLevel, data=dat)
+model2 <- lm(log(BacterialCopyNumber_mean+1) ~ RichLevel, data=dat)
+summary(model1)
+summary(model2)
+```
+
+Yes! There is a significant effect of bacterial community richness and biofilm thickness, both in terms of CV and bacterial qPCR copy number.
+
+
+# Follow-up questions
+
+Now that we've explored some basic relationships in our data, it's time to start plotting your own questions. Below, I've listed a few options for you to try out-- but feel free to deep-dive and do you own investigations into interesting trends you see!
+
+* We observed that greater bacterial richness produces thicker biofilms. Do thicker biofilms inhibit Bd settlement?
+* Is there a difference between inhibitory and non-inhibitory bacterial communities on Bd settlement? Which one is more effective at inhibiting Bd? Across all Richness Levels, or just some of them?
+* Each "DateStart" has 2 replicates-- that is, I ran 2 replicates at a time. Do we see an effect of DateStart on biofilm thickness? How about Bd establishment?
